@@ -1,0 +1,50 @@
+name: Public candidate image validation
+
+on:
+  push:
+    branches: [shshavik/OKE-46637-public-build-validation]
+
+permissions:
+  contents: read
+
+jobs:
+  image:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: oracle/oci-native-ingress-controller
+          ref: 781230076f1c4b76714c411b88235892afba15bb
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.27.3'
+      - name: Build exact public candidate
+        run: |
+          test "$(git rev-parse HEAD)" = 781230076f1c4b76714c411b88235892afba15bb
+          docker build --platform linux/${{ matrix.arch }} -t nic-public-candidate:7812300-${{ matrix.arch }} -f Dockerfile .
+      - name: Inspect shipped binary and runtime packages
+        run: |
+          image=nic-public-candidate:7812300-${{ matrix.arch }}
+          mkdir evidence
+          docker image inspect "$image" --format '{{json .}}' > evidence/image.json
+          docker run --rm --entrypoint rpm "$image" -q ca-certificates brotli curl libcurl libgcc libstdc++ | tee evidence/packages.txt
+          container=$(docker create "$image")
+          trap 'docker rm "$container" >/dev/null' EXIT
+          docker cp "$container":/usr/local/bin/oci-native-ingress-controller/onic evidence/onic
+          go version -m evidence/onic | tee evidence/binary.txt
+          sha256sum evidence/onic > evidence/binary.sha256
+          docker save "$image" | gzip > evidence/image.tar.gz
+          sha256sum evidence/image.tar.gz > evidence/image.tar.gz.sha256
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nic-public-7812300-${{ matrix.arch }}
+          path: evidence/
+          retention-days: 7
